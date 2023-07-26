@@ -58,7 +58,7 @@ def filtering_pass_with_constraint2(y, m0, S0, C, R, A, Q, ensemble_vars, D, key
 
 
 mu = [0,0.001,0.005, 0.01]
-c = [('fork','mid')]
+c = [('fork','mid'),('mid','chin_base')]
 folder = "/eks_opti"
 operator = "/20210204_Quin/"
 name = "img197707"
@@ -138,16 +138,15 @@ stacked_preds,ensemble_pca,ensemble_ex_var,ensemble_pcs,good_ensemble_pcs =  mul
 y_obs = np.asarray(stacked_preds)
 
 
+
 #compute center of mass
 #latent variables (observed)
-good_z_t_obs = {key:None for key in  range(len(good_ensemble_pcs))}
-for k in range(len(good_z_t_obs)):
-    good_z_t_obs[k] = good_ensemble_pcs[k]@L #latent variables - true 3D pca
+good_z_t_obs = good_ensemble_pcs #latent variables - true 3D pca
 
 
-# set L
-L_initial = np.tril(np.eye(3)).flatten()
-L = find_linear_transformation(np.asarray([list(good_ensemble_pcs.items())[i][1] for i in range(len(list(good_ensemble_pcs.items())[0]))]), L_initial)
+## set L
+#L_initial = np.tril(np.eye(3)).flatten()
+#L = find_linear_transformation(np.asarray([list(good_z_t_obs.items())[i][1] for i in range(len(list(good_z_t_obs.items())[0]))]), L_initial)
 
 
 n, T, v = y_obs.shape
@@ -173,7 +172,7 @@ R = np.eye(ensemble_pca.components_.shape[1]) # placeholder diagonal matrix for 
 all_mu = {0:None, 1: None}
 #print(f"filtering ...")
 for i in range(len(mu)):
-    mfc, Vfc, Sc  = filtering_pass_with_constraint2(y_obs, m0, S0, C, R, A, Q,ensemble_vars, D_ij, keypoint_ensemble_list, constrained_keypoints_graph=c, mu=mu[i])
+    mfc, Vfc, Sc  = filtering_pass_with_constraint(y_obs, m0, S0, C, R, A, Q,ensemble_vars, D_ij, L, keypoint_ensemble_list, constrained_keypoints_graph=c, mu=mu[i])
 
     ## Do the smoothing step
     #print("done filtering")
@@ -207,11 +206,12 @@ for i in range(len(mu)):
             var = np.empty(y_m_smooth[k].T[camera_indices[camera][0]].shape)
             var[:] = np.nan
             pred_arr = pd.DataFrame(np.vstack([
-                y_m_smooth[k].T[camera_indices[camera][0]] + means_camera[camera_indices[camera][0]],
-                y_m_smooth[k].T[camera_indices[camera][1]] + means_camera[camera_indices[camera][1]],
+                y_m_smooth[k].T[camera_indices[camera][0]] + means_camera_dict[k][camera_indices[camera][0]],
+                y_m_smooth[k].T[camera_indices[camera][1]] + means_camera_dict[k][camera_indices[camera][1]],
                 var,
             ]).T, columns = pdindex)
             key_df.append(pred_arr)
+        #print(means_camera[camera_indices[camera][0]],means_camera[camera_indices[camera][1]])
         camera_dfs[camera_name + '_df'] = pd.concat(key_df,axis=1)
 
     all_mu[i] = camera_dfs
