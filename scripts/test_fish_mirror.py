@@ -5,8 +5,166 @@ Created on Tue Jul 25 02:33:33 2023
 
 @author: clairehe
 """
+import cv2
 
 from eks.multiview_pca_fish import *
+from video_utils import *
+
+
+camera_names = ['main', 'top', 'right']
+keypoint_ensemble_list = ['mid','fork','chin_base']
+#keypoint_ensemble_list = [ 'head', 'chin_base', 'chin1_4', 'chin_half','chin3_4', 'chin_tip', 'mid', 'fork',
+# 'stripeA', 'stripeP', 'tail_neck', 'dorsal', 'anal', 'caudal_d', 'caudal_v']
+tracker_name = 'heatmap_mhcrnn_tracker'
+num_cameras = len(camera_names)
+labeled_data = pd.read_csv("/Users/clairehe/Documents/GitHub/eks/data/mirror-fish/CollectedData_new.csv", header = [1,2])
+
+
+
+mu = [0,0.005,0.001]
+c = [('fork','chin_base'),('fork', 'mid'), ('chin_base','mid')]
+
+
+session = '20210204_Quin'
+folder = "/eks_opti"
+operator = "/20210204_Quin/"
+#name = "img048416" 
+name =  "img197707" 
+frame = name+'.csv'
+
+baseline = pd.read_csv("/Users/clairehe/Documents/GitHub/eks/data/misc/mirror-fish_ensemble-predictions/eks"+operator+name+".csv", header=[ 1, 2],index_col=0)
+#new = pd.read_csv("/Users/clairehe/Documents/GitHub/eks/data/misc/one-video-mirror-fish-predictions"+folder+operator+name, header=[ 1, 2], index_col=0)
+baseline0 = pd.read_csv("/Users/clairehe/Documents/GitHub/eks/data/misc/mirror-fish_ensemble-predictions/eks"+operator+name+".csv", header=[0, 1, 2],index_col=0)
+
+
+# NOTE! replace this path with an absolute path where you want to save EKS outputs
+eks_save_dir = '/Users/clairehe/Documents/GitHub/eks/data/misc/one-video-mirror-fish-predictions/eks_opti/'
+
+# path for prediction csvs
+file_path = '/Users/clairehe/Documents/GitHub/eks/data/misc/mirror-fish_ensemble-predictions'
+
+# NOTE! replace these paths with the absolute paths to prediction csvs on your local computer
+model_dirs = [
+    file_path+"/network_0",
+    file_path+"/network_1",
+    file_path+"/network_2",
+    file_path+"/network_3",
+    file_path+"/network_4",
+]
+
+
+#    'head', 'chin_base', 'chin1_4', 'chin_half','chin3_4', 'chin_tip', 'mid', 'fork',
+#   'stripeA', 'stripeP', 'tail_neck', 'dorsal', 'anal', 'caudal_d', 'caudal_v',
+
+
+smooth_param = 0.01
+quantile_keep_pca = 50
+
+camkeys = ["_main","_top","_right"]
+# flatten columns
+labeled_data.columns = ['_'.join(tup).rstrip('_') for tup in labeled_data.columns.values]
+
+img_id = labeled_data.loc[['labeled-data'+operator+name+'.png' in s for s in labeled_data.bodyparts_coords]].index[0]
+
+
+
+#%% set distance constraint projection for a few q's in keypoint_ensemble_list
+
+
+
+mask = []
+for keys in keypoint_ensemble_list:
+    for cam in camkeys:
+        for coord in ["_x", "_y"]:
+            mask.append(keys+cam+coord)
+            
+
+
+markers_list = labeled_data.reset_index()[mask]
+# Ensemble
+scaled_dict = []
+good_frames_dict = []
+good_preds_dict = []
+ensemble_vars_dict = []
+markers_list_cameras  = []
+            
+num_mar = len(markers_list)
+n = len(keypoint_ensemble_list)
+num_cameras = len(camkeys)
+y_obs = np.empty((n, num_mar, 2*num_cameras))
+q = np.empty((n, num_mar, 3))
+
+
+for j, keypoint_ensemble in enumerate(keypoint_ensemble_list):
+    markers_list_cameras = [[] for i in range(num_cameras)]
+    for i,cam in enumerate(camkeys):
+        tmp = []
+
+        for m in markers_list.keys():
+            if cam in m and keypoint_ensemble in m:
+                tmp.append(markers_list[m])
+    
+        markers_list_cameras[i].append(pd.concat(tmp, axis=1))
+
+    
+    y = np.asarray(markers_list_cameras).reshape((num_mar, 2*num_cameras))
+    
+    # fill nans by median value 
+    col_mean = np.nanmedian(y, axis=0)
+    inds = np.where(np.isnan(y))
+    y[inds] = np.take(col_mean, inds[1])
+    means_camera = np.mean(y,axis=0)
+    
+    # scale 
+    y -= means_camera
+    # scaled_y = scale(y)
+    # get PCA 
+    labeled_pca, labeled_var = pca(y, 3)
+    
+    q[j,:,:] = labeled_pca.transform(y)
+    y_obs[j,:,:] = y
+
+  # Define the size of L
+L_initial = np.tril(np.eye(3)).flatten()
+L = find_linear_transformation(q, L_initial)
+
+D_ij = get_3d_distance_loss(q, L, keypoint_ensemble_list, c, num_cameras)[img_id]
+
+def variance_plot(L,q):
+    s = 0
+    d = 0
+    n = int(np.sqrt(len(L)))
+    #L = np.asarray(L).reshape((n,n))
+    upper_indices = np.triu_indices(n,1) #offset to diagonal
+    # (n-1)n/2 
+    L[upper_indices] = np.zeros((n*(n-1)//2)) # constraint upper triangle to zeros
+    for i in range(q.shape[0]):
+        d += np.var(L@q[i,:,:].T)
+        for j in range(q.shape[0]):
+            if j != i:
+                s+= np.linalg.norm(L@(q[i,:,:]-q[j,:,:]).T,axis=0)
+                # print(keypoint_ensemble_list[i], keypoint_ensemble_list[j], i)
+    return s/d
+color = ['blue','red']
+s = [variance_plot(L,q), variance_plot(np.eye(3), q)]
+leg = ['variance obtained','variance in pca']
+fig, ax = plt.subplots(1,2,figsize=(20,6))
+#ax[0].set(ylim=(0.001305, 0.001545))
+#ax[1].set(ylim=(0.00456, 0.00468))
+for i in range(2):
+    ax[i].errorbar([j for j in range(len(s[i]))], y = [np.mean(s[i]) for j in range(len(s[i]))],
+           yerr=np.sqrt((s[i]-np.mean(s[i]))**2), fmt='o', color=color[i], label=leg[i])
+    ax[i].set_xlabel('x-axis')
+    ax[i].set_ylabel('y-axis')
+
+    ax[i].set_title('variance plot')
+    ax[i].legend()
+
+#%%%%% 
+
+
+
+
 
 def filtering_pass_with_constraint2(y, m0, S0, C, R, A, Q, ensemble_vars, D, keypoint_ensemble_list, constrained_keypoints_graph=None, mu=0.2):
     if constrained_keypoints_graph == None:
@@ -17,6 +175,7 @@ def filtering_pass_with_constraint2(y, m0, S0, C, R, A, Q, ensemble_vars, D, key
     n = len(keypoint_ensemble_list) # number of keypoints
     v = y.shape[2] # number of views
     mf = np.zeros(shape=(n,T, m0.shape[0]))
+   
     Vf = np.zeros(shape=(n,T, m0.shape[0], m0.shape[0]))
     S = np.zeros(shape=(n,T, m0.shape[0], m0.shape[0]))
     # for each keypoint
@@ -57,53 +216,14 @@ def filtering_pass_with_constraint2(y, m0, S0, C, R, A, Q, ensemble_vars, D, key
 
 
 
-mu = [0,0.001,0.005, 0.01]
-c = [('fork','mid'),('mid','chin_base')]
-folder = "/eks_opti"
-operator = "/20210204_Quin/"
-name = "img197707"
 
-baseline = pd.read_csv("/Users/clairehe/Documents/GitHub/eks/data/misc/mirror-fish_ensemble-predictions/eks"+operator+name+".csv", header=[ 1, 2],index_col=0)
-#new = pd.read_csv("/Users/clairehe/Documents/GitHub/eks/data/misc/one-video-mirror-fish-predictions"+folder+operator+name, header=[ 1, 2], index_col=0)
-baseline0 = pd.read_csv("/Users/clairehe/Documents/GitHub/eks/data/misc/mirror-fish_ensemble-predictions/eks"+operator+name+".csv", header=[0, 1, 2],index_col=0)
-
-
-# NOTE! replace this path with an absolute path where you want to save EKS outputs
-eks_save_dir = '/Users/clairehe/Documents/GitHub/eks/data/misc/one-video-mirror-fish-predictions/eks_opti/'
-
-# path for prediction csvs
-file_path = '/Users/clairehe/Documents/GitHub/eks/data/misc/mirror-fish_ensemble-predictions'
-
-# NOTE! replace these paths with the absolute paths to prediction csvs on your local computer
-model_dirs = [
-    file_path+"/network_0",
-    file_path+"/network_1",
-    file_path+"/network_2",
-    file_path+"/network_3",
-    file_path+"/network_4",
-]
-
-
-#    'head', 'chin_base', 'chin1_4', 'chin_half','chin3_4', 'chin_tip', 'mid', 'fork',
-#   'stripeA', 'stripeP', 'tail_neck', 'dorsal', 'anal', 'caudal_d', 'caudal_v',
-
-#image_path = "/Users/clairehe/Documents/GitHub/eks/data/mirror-fish/labeled-data"
-#im = plt.imread(image_path+operator+name+".png")
-#plt.imshow(im)
-#plt.suptitle("labeled "+name)
-
-
-session = '20210204_Quin'
-frame = 'img197707.csv'
-smooth_param = 0.01
-quantile_keep_pca = 50
 # Get markers list from networks
 markers_list = []
 for model_dir in model_dirs:
     csv_file = os.path.join(model_dir, session, frame)
     df_tmp = pd.read_csv(csv_file, header=[0, 1, 2], index_col=0)
     keypoint_names = [l[1] for l in df_tmp.columns[::3]]
-    markers_tmp = convert_lp_dlc(df_tmp, keypoint_names, model_name=tracker_name)
+    markers_tmp = convert_lp_dlc(df_tmp, keypoint_names, model_name='heatmap_mhcrnn_tracker')
     markers_list.append(markers_tmp)
 
 # Ensemble
@@ -150,11 +270,11 @@ good_z_t_obs = good_ensemble_pcs #latent variables - true 3D pca
 
 
 n, T, v = y_obs.shape
-print(y_obs.shape)
+#print(y_obs.shape)
 ##### Set values for kalman filter #####
-m0 = np.asarray([0.0, 0.0, 0.0]) # initial state: mean
-S0 = np.zeros((nkeys,m0.shape[0], m0.shape[0] ))
-d_t = {key: None for key in range(nkeys)}
+m0 = np.zeros(3) # initial state: mean
+S0 = np.zeros((n,m0.shape[0], m0.shape[0] ))
+d_t = {key: None for key in range(n)}
 # need different variance for each bodyparts 
 for k in range(n):
     S0[k,:,:] =  np.asarray([[np.var(good_z_t_obs[k][:,0]), 0.0, 0.0], [0.0, np.var(good_z_t_obs[k][:,1]), 0.0], [0.0, 0.0, np.var(good_z_t_obs[k][:,2])]]) # diagonal: var
@@ -215,3 +335,70 @@ for i in range(len(mu)):
         camera_dfs[camera_name + '_df'] = pd.concat(key_df,axis=1)
 
     all_mu[i] = camera_dfs
+    
+    
+
+    #%%%% Plots
+    
+    
+nkeys = len(keypoint_ensemble_list)
+ncams = len(camkeys)
+color = ['b','g','r','c','m','y','k']
+fig,ax = plt.subplots(nkeys,2*ncams,figsize=(24,12))
+for n,key in enumerate(keypoint_ensemble_list):
+    for j,cam in enumerate(camera_names):
+        for i in range(len(mu)):
+            ax[n, 2*j].plot(all_mu[i]['{}_df'.format(cam)]['ensemble-kalman_tracker'][key]["x"], color=color[i], label = ' {}'.format(mu[i]), alpha=0.3)
+            ax[n,2*j].title.set_text('{}'.format(key)+'{}'.format(cam)+'_x')
+            ax[n, 2*j-1].plot(all_mu[i]['{}_df'.format(cam)]['ensemble-kalman_tracker'][key]["y"], color=color[i], label = ' {}'.format(mu[i]), alpha = 0.3)
+            ax[n, 2*j-1].title.set_text('{}'.format(key)+'{}'.format(cam)+'_y')
+            ax[n, 2*j].legend(loc='upper right')
+            ax[n,2*j-1].legend(loc='upper right')
+        
+
+
+base_path = '/Users/clairehe/Documents/GitHub/eks/data/mirror-fish/videos-for-each-labeled-frame'
+video_name = 'raw_vid'
+
+
+save_file = os.path.join(base_path, f'%s_eks.mp4' % video_name)
+framerate=1
+
+cap = cv2.VideoCapture(base_path+operator+name+'.mp4')
+
+marker_shapes = ['D','o', '^', 's','v'] # 4 models 
+colors = ['red', 'green', 'blue'] # 3 views
+
+single_alpha = .5
+single_alpha_list = [single_alpha]*len(all_mu)
+alphas = single_alpha_list + [1.0]
+model_labels = ['ensemble', f'kalman, E:{mu}']
+frame_idxs = [i for i in range(len(all_mu[0]['main_df']['ensemble-kalman_tracker']['mid']['x']))]
+tmp_dir = os.path.join(os.path.dirname(save_file), 'tmpZzZ')
+if not os.path.exists(tmp_dir):
+    os.makedirs(tmp_dir)
+# plot 
+fig, ax = plt.subplots(1,1,figsize=(10, 10))
+txt_fr_kwargs = {
+    'fontsize': 14, 'color': [1, 1, 1], 'horizontalalignment': 'left',
+    'verticalalignment': 'top', 'fontname': 'monospace',
+    'bbox': dict(facecolor='k', alpha=0.25, edgecolor='none'),
+    'transform': ax.transAxes
+}
+for idx in frame_idxs:
+    # important!! otherwise each frame will plot on top of the last
+    ax.clear()
+
+    frame = get_frames_from_idxs(cap, [idx])
+    # plot original frame
+    ax.imshow(frame[0, 0], vmin=0, vmax=255, cmap='gray')
+    ax.set_xticks([])
+    ax.set_yticks([])
+
+    patches = []
+    plot_video_markers(all_mu, keypoint_ensemble_list, camera_names, ax, idx, marker_shapes, colors, alphas, mu)
+    plt.legend(mu)
+    plt.title(c)
+    im = ax.text(0.02, 0.98, 'frame %i' % idx, **txt_fr_kwargs)
+    plt.savefig(os.path.join(tmp_dir, 'frame_%06i.jpeg' % idx))
+save_video(save_file, tmp_dir, framerate, frame_pattern='frame_%06i.jpeg')
