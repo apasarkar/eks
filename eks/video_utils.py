@@ -4,6 +4,8 @@
 Created on Thu Jul 27 08:31:35 2023
 
 @author: clairehe
+
+Helper functions for video making
 """
 import cv2
 import os

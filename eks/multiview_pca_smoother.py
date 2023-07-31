@@ -54,9 +54,6 @@ def ensemble_kalman_smoother_paw_asynchronous(
 
     Returns
     -------
-
-    Returns
-    -------
     dict
         left: dataframe containing smoothed left paw markers; same format as input dataframes
         right: dataframe containing smoothed right paw markers; same format as input dataframes
