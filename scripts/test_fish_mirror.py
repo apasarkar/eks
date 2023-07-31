@@ -4,11 +4,15 @@
 Created on Tue Jul 25 02:33:33 2023
 
 @author: clairehe
+
+Script to run over fish datasets 
+
 """
 import cv2
 
 from eks.multiview_pca_fish import *
-from video_utils import *
+from eks.video_utils import *
+from collections import defaultdict
 
 
 camera_names = ['main', 'top', 'right']
@@ -21,15 +25,15 @@ labeled_data = pd.read_csv("/Users/clairehe/Documents/GitHub/eks/data/mirror-fis
 
 
 
-mu = [0,0.005,0.001]
+mu = [0,0.1, 0.5, 1]
 c = [('fork','chin_base'),('fork', 'mid'), ('chin_base','mid')]
 
 
 session = '20210204_Quin'
 folder = "/eks_opti"
 operator = "/20210204_Quin/"
-#name = "img048416" 
-name =  "img197707" 
+name = "img048416" 
+#name =  "img197707" 
 frame = name+'.csv'
 
 baseline = pd.read_csv("/Users/clairehe/Documents/GitHub/eks/data/misc/mirror-fish_ensemble-predictions/eks"+operator+name+".csv", header=[ 1, 2],index_col=0)
@@ -128,7 +132,7 @@ for j, keypoint_ensemble in enumerate(keypoint_ensemble_list):
 L_initial = np.tril(np.eye(3)).flatten()
 L = find_linear_transformation(q, L_initial)
 
-D_ij = get_3d_distance_loss(q, L, keypoint_ensemble_list, c, num_cameras)[img_id]
+D_ij = get_3d_distance(q, L, keypoint_ensemble_list, c, num_cameras)[img_id]
 
 def variance_plot(L,q):
     s = 0
@@ -160,8 +164,7 @@ for i in range(2):
     ax[i].set_title('variance plot')
     ax[i].legend()
 
-#%%%%% 
-
+#%%%%% REPROCESSING
 
 
 
@@ -289,10 +292,19 @@ A = np.asarray([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]) #state-trans
 C = ensemble_pca.components_.T # Measurement function is inverse transform of PCA
 R = np.eye(ensemble_pca.components_.shape[1]) # placeholder diagonal matrix for ensemble variance
 
+
+
+
+
+
+#%%%%% FILTERING
+
+
+
 all_mu = {0:None, 1: None}
 #print(f"filtering ...")
 for i in range(len(mu)):
-    mfc, Vfc, Sc  = filtering_pass_with_constraint(y_obs, m0, S0, C, R, A, Q,ensemble_vars, D_ij, L, keypoint_ensemble_list, constrained_keypoints_graph=c, mu=mu[i])
+    mfc, Vfc, Sc  = filtering_pass_with_constraint(y_obs, m0, S0, C, R, A, Q,ensemble_vars, D_ij, L, keypoint_ensemble_list, constrained_keypoints_graph=c, mu=mu[i],loss='eps')
 
     ## Do the smoothing step
     #print("done filtering")
@@ -356,7 +368,7 @@ for n,key in enumerate(keypoint_ensemble_list):
             ax[n,2*j-1].legend(loc='upper right')
         
 
-
+#%%%V VIDEO
 base_path = '/Users/clairehe/Documents/GitHub/eks/data/mirror-fish/videos-for-each-labeled-frame'
 video_name = 'raw_vid'
 

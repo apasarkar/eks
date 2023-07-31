@@ -131,7 +131,7 @@ for session in sessions:
     for frame in frames:
         name = frame[:-4]
         img_id = labeled_data.loc[['labeled-data'+operator+name+'.png' in s for s in labeled_data.bodyparts_coords]].index[0]
-        D_ij = get_3d_distance_loss(q, L, keypoint_ensemble_list, c, num_cameras)[img_id]
+        D_ij = get_3d_distance(q, L, keypoint_ensemble_list, c, num_cameras)[img_id]
     
     
         # Get markers list from networks
