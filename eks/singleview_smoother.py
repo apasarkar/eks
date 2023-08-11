@@ -46,7 +46,7 @@ def ensemble_kalman_smoother_single_view(
     x_t_obs, y_t_obs = keypoints_mean_dict[x_key] - mean_x_obs, keypoints_mean_dict[y_key] - mean_y_obs 
     z_t_obs = np.vstack((x_t_obs, y_t_obs)) #latent variables - true x and y
     
-            ##### Set values for kalman filter #####
+     ##### Set values for kalman filter #####
     m0 = np.asarray([0.0, 0.0]) # initial state: mean
     S0 =  np.asarray([[np.var(x_t_obs), 0.0], [0.0 , np.var(y_t_obs)]]) # diagonal: var
 
@@ -79,19 +79,18 @@ def ensemble_kalman_smoother_single_view(
     # Smoothed posterior over y
     y_m_smooth = np.dot(C, ms.T).T
     y_v_smooth = np.swapaxes(np.dot(C, np.dot(Vs, C.T)), 0, 1)
-
     # --------------------------------------
     # final cleanup
     # --------------------------------------
     pdindex = make_dlc_pandas_index([keypoint_ensemble])
-     
     var = np.empty(y_m_smooth.T[0].shape)
     var[:] = np.nan
     pred_arr = np.vstack([
         y_m_smooth.T[0] + mean_x_obs,
         y_m_smooth.T[1] + mean_y_obs,
         var,
+        y_v_smooth[:,0,0],
+        y_v_smooth[:,1,1],
     ]).T
     df = pd.DataFrame(pred_arr, columns=pdindex)
-
     return {keypoint_ensemble+'_df': df}

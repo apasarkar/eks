@@ -79,15 +79,24 @@ def add_mean_to_array(pred_arr, keys, mean_x, mean_y):
 
 
 def ensemble_kalman_smoother_pupil(
-        markers_list, keypoint_names, tracker_name, state_transition_matrix):
+    markers_list,
+    keypoint_names,
+    tracker_name,
+    state_transition_matrix,
+    likelihood_default=np.nan
+):
     """
 
     Parameters
     ----------
     markers_list : list of pd.DataFrames
         each list element is a dataframe of predictions from one ensemble member
+    keypoint_names: list
     tracker_name : str
         tracker name for constructing final dataframe
+    state_transition_matrix : np.ndarray
+    likelihood_default
+        value to store in likelihood column; should be np.nan or int in [0, 1]
 
     Returns
     -------
@@ -199,12 +208,16 @@ def ensemble_kalman_smoother_pupil(
                      ['pupil_bottom_r_x', 'pupil_bottom_r_y'],
                      ['pupil_left_r_x', 'pupil_left_r_y']]
     pred_arr = []
-    for key_pair in key_pair_list:
+    for i, key_pair in enumerate(key_pair_list):
         pred_arr.append(processed_arr_dict[key_pair[0]])
         pred_arr.append(processed_arr_dict[key_pair[1]])
         var = np.empty(processed_arr_dict[key_pair[0]].shape)
-        var[:] = np.nan
+        var[:] = likelihood_default
         pred_arr.append(var)
+        x_var = y_v_smooth[:,i, i]
+        y_var = y_v_smooth[:,i+1, i+1]
+        pred_arr.append(x_var)
+        pred_arr.append(y_var)
     pred_arr = np.asarray(pred_arr)
     markers_df = pd.DataFrame(pred_arr.T, columns=pdindex)
 
