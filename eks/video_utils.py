@@ -80,5 +80,25 @@ def plot_video_markers(markers_dict,keypoint_ensemble_list, camera_names, ax, fr
     for j, part in enumerate(keypoint_ensemble_list):
         for c, cam in enumerate(camera_names):
             for model_id in range(len(mu)):
-                ax.plot(markers_dict[model_id][cam+'_df']['ensemble-kalman_tracker'][part]['x'][frame_idx],markers_dict[model_id][cam+'_df']['ensemble-kalman_tracker'][part]['y'][frame_idx], marker_shapes[model_id], markeredgecolor='w', markersize=4, alpha=alphas[model_id], 
-                        color=colors[c])
+                ax.plot(markers_dict[model_id][cam+'_df'][part]['x'][frame_idx],markers_dict[model_id][cam+'_df'][part]['y'][frame_idx], marker_shapes[model_id], markeredgecolor='w', markersize=8, alpha=alphas[model_id], 
+                        color=colors[model_id])
+
+
+
+def plot_variance_markers(markers_dict, y_v_smooth,keypoint_ensemble_list, camera_names, ax, frame_idx, marker_shapes, colors, alphas, mu):
+    for j, part in enumerate(keypoint_ensemble_list):
+        for c, cam in enumerate(camera_names):
+            for model_id in range(len(mu)):
+                ax.plot(markers_dict[model_id][cam+'_df'][part]['x'][frame_idx],markers_dict[model_id][cam+'_df'][part]['y'][frame_idx], marker_shapes[model_id], markeredgecolor='w', markersize=10, alpha=alphas[model_id], 
+                        color=colors[model_id])
+
+                ax.errorbar(x=markers_dict[model_id][cam+'_df'][part]['x'][frame_idx], 
+                            y=markers_dict[model_id][cam+'_df'][part]['y'][frame_idx],
+                            xerr=markers_dict[model_id][cam+'_df'][part]['var_x'][frame_idx],
+                            yerr=markers_dict[model_id][cam+'_df'][part]['var_y'][frame_idx],
+                            color=colors[model_id],
+                            alpha=alphas[model_id],
+                            capsize=14)
+            
+        
+        

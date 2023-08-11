@@ -25,14 +25,14 @@ labeled_data = pd.read_csv("/Users/clairehe/Documents/GitHub/eks/data/mirror-fis
 
 
 
-mu = [0,0.1, 0.5, 1]
-c = [('fork','chin_base'),('fork', 'mid'), ('chin_base','mid')]
+mu = [0.001]
+constraint = [('fork','chin_base'),('fork', 'mid'), ('chin_base','mid')]
 
 
-session = '20210204_Quin'
+session = '20210126_Sean' #'20210204_Quin'
 folder = "/eks_opti"
-operator = "/20210204_Quin/"
-name = "img048416" 
+operator = "/20210126_Sean/" #"/20210204_Quin/"
+name ='img023203' # "img048416" 
 #name =  "img197707" 
 frame = name+'.csv'
 
@@ -132,7 +132,7 @@ for j, keypoint_ensemble in enumerate(keypoint_ensemble_list):
 L_initial = np.tril(np.eye(3)).flatten()
 L = find_linear_transformation(q, L_initial)
 
-D_ij = get_3d_distance(q, L, keypoint_ensemble_list, c, num_cameras)[img_id]
+D_ij = get_3d_distance(q, L, keypoint_ensemble_list, c)[img_id]
 
 def variance_plot(L,q):
     s = 0
@@ -168,58 +168,6 @@ for i in range(2):
 
 
 
-
-def filtering_pass_with_constraint2(y, m0, S0, C, R, A, Q, ensemble_vars, D, keypoint_ensemble_list, constrained_keypoints_graph=None, mu=0.2):
-    if constrained_keypoints_graph == None:
-        constrained_keypoints_graph = pairwise(keypoint_ensemble_list)
-        # all nodes are connected from bodyparts of interest
-    # y.shape = (keypoints, time steps, views) 
-    T = y.shape[1]  # number of time stpes
-    n = len(keypoint_ensemble_list) # number of keypoints
-    v = y.shape[2] # number of views
-    mf = np.zeros(shape=(n,T, m0.shape[0]))
-   
-    Vf = np.zeros(shape=(n,T, m0.shape[0], m0.shape[0]))
-    S = np.zeros(shape=(n,T, m0.shape[0], m0.shape[0]))
-    # for each keypoint
-    for k, part in enumerate(keypoint_ensemble_list):
-        # initial conditions
-        for i in range(v):
-            R[i,i] = ensemble_vars[k][0][i]
-        mf[k,0] =m0 + kalman_dot(y[k,0, :] - np.dot(C, m0), S0[k], C, R)
-        Vf[k,0, :] = S0[k] - kalman_dot(np.dot(C, S0[k]), S0[k], C, R)
-        S[k,0] = S0[k]
-        # filter over time
-    for i in range(1,T):
-        for k, part in enumerate(keypoint_ensemble_list):
-            # ensemble for each camera view
-            for t in range(v):
-                R[t,t] = ensemble_vars[k][i][t]
-            S[k,i-1] = np.dot(A, np.dot(Vf[k,i-1, :], A.T)) + Q
-            #print(S[i-1], )
-            y_minus_CAmf = y[k,i, :] - np.dot(C, np.dot(A, mf[k,i-1, :]))
-           
-            
-            if any(part in i for i in constrained_keypoints_graph):
-                # gradient terms
-                grad = gradient_distance(mf[:,i,:], part, D, keypoint_ensemble_list, constrained_keypoints_graph)
-                
-                hess = hessian_distance(mf[:,i,:], part, D, keypoint_ensemble_list, constrained_keypoints_graph)
-                # add gradient and hessian penalisaiton
-                mf[k,i, :] = np.dot(A, mf[k,i-1, :]) + kalman_dot(y_minus_CAmf, S[k,i-1], C, R) + mu*grad
-                
-                S[k,i-1] = np.linalg.inv(np.linalg.inv(S[k,i-1])+mu*hess)
-                
-            else:
-                mf[k,i, :] = np.dot(A, mf[k,i-1, :]) + kalman_dot(y_minus_CAmf, S[k,i-1], C, R) 
-            Vf[k,i, :] = S[k,i-1] - kalman_dot(np.dot(C, S[k,i-1]), S[k,i-1], C, R)
-            
-    return mf, Vf, S     
-
-
-
-
-
 # Get markers list from networks
 markers_list = []
 for model_dir in model_dirs:
@@ -228,6 +176,8 @@ for model_dir in model_dirs:
     keypoint_names = [l[1] for l in df_tmp.columns[::3]]
     markers_tmp = convert_lp_dlc(df_tmp, keypoint_names, model_name='heatmap_mhcrnn_tracker')
     markers_list.append(markers_tmp)
+    
+
 
 # Ensemble
 scaled_dict = []
@@ -235,6 +185,7 @@ good_frames_dict = []
 good_preds_dict = []
 ensemble_vars_dict = []
 means_camera_dict = []
+markers_all = []
 for n, keypoint_ensemble in enumerate(keypoint_ensemble_list):
     markers_list_cameras = [[] for i in range(num_cameras)]
     for m in markers_list:
@@ -245,9 +196,11 @@ for n, keypoint_ensemble in enumerate(keypoint_ensemble_list):
                    and 'likelihood' not in key 
                    and keypoint_ensemble in key]
                  ]
+                
             )
     # ENSEMBLING PER KEYPOINTS
-    scaled_ensemble_preds, good_frames, good_scaled_ensemble_preds,ensemble_vars,means_camera = ensembling_multiview(markers_list_cameras, keypoint_ensemble, smooth_param, quantile_keep_pca, camera_names, plot=True)
+    markers_all.append(markers_list_cameras)
+    scaled_ensemble_preds, good_frames, good_scaled_ensemble_preds,ensemble_vars,means_camera = ensembling_multiview(markers_list_cameras, keypoint_ensemble, smooth_param, quantile_keep_pca, camera_names)
     scaled_dict.append(scaled_ensemble_preds)
     good_frames_dict.append(good_frames)
     good_preds_dict.append(good_scaled_ensemble_preds)
@@ -267,9 +220,6 @@ y_obs = np.asarray(stacked_preds)
 good_z_t_obs = good_ensemble_pcs #latent variables - true 3D pca
 
 
-## set L
-#L_initial = np.tril(np.eye(3)).flatten()
-#L = find_linear_transformation(np.asarray([list(good_z_t_obs.items())[i][1] for i in range(len(list(good_z_t_obs.items())[0]))]), L_initial)
 
 
 n, T, v = y_obs.shape
@@ -304,8 +254,8 @@ R = np.eye(ensemble_pca.components_.shape[1]) # placeholder diagonal matrix for 
 all_mu = {0:None, 1: None}
 #print(f"filtering ...")
 for i in range(len(mu)):
-    mfc, Vfc, Sc  = filtering_pass_with_constraint(y_obs, m0, S0, C, R, A, Q,ensemble_vars, D_ij, L, keypoint_ensemble_list, constrained_keypoints_graph=c, mu=mu[i],loss='eps')
-
+    mfc, Vfc, Sc  = filtering_pass_with_constraint(y_obs, m0, S0, C, R, A, Q,ensemble_vars, D_ij, L, keypoint_ensemble_list, constrained_keypoints_graph=constraint, mu=mu[i],loss='eps')
+    
     ## Do the smoothing step
     #print("done filtering")
     y_m_filt = {key: None for key in range(n)}
@@ -373,17 +323,17 @@ base_path = '/Users/clairehe/Documents/GitHub/eks/data/mirror-fish/videos-for-ea
 video_name = 'raw_vid'
 
 
-save_file = os.path.join(base_path, f'%s_eks.mp4' % video_name)
+save_file = os.path.join(base_path, f'%s_eks' % video_name + '_mu_{}.mp4'.format(mu[0]))
 framerate=1
 
 cap = cv2.VideoCapture(base_path+operator+name+'.mp4')
 
-marker_shapes = ['D','o', '^', 's','v'] # 4 models 
+markers_shape = ["o"] #marker_shapes = ['D','o', '^', 's','v'] # 4 models 
 colors = ['red', 'green', 'blue'] # 3 views
 
 single_alpha = .5
 single_alpha_list = [single_alpha]*len(all_mu)
-alphas = single_alpha_list + [1.0]
+alphas = [1.0]+single_alpha_list 
 model_labels = ['ensemble', f'kalman, E:{mu}']
 frame_idxs = [i for i in range(len(all_mu[0]['main_df']['ensemble-kalman_tracker']['mid']['x']))]
 tmp_dir = os.path.join(os.path.dirname(save_file), 'tmpZzZ')
@@ -408,9 +358,17 @@ for idx in frame_idxs:
     ax.set_yticks([])
 
     patches = []
-    plot_video_markers(all_mu, keypoint_ensemble_list, camera_names, ax, idx, marker_shapes, colors, alphas, mu)
+    for i,key in enumerate(keypoint_ensemble_list): 
+        for j, cam in enumerate(camkeys):
+            for p in range(5):
+                ax.plot(markers_all[i][j][p][key+cam+'_x'][idx],markers_all[i][j][p][key+cam+'_y'][idx], 'v', markeredgecolor='w', markersize=4, alpha=0.5, 
+                        color=colors[0]) 
+    
+            
+    plot_video_markers(all_mu, keypoint_ensemble_list, camera_names, ax, idx, marker_shapes, colors[1], alphas, mu)
+    
     plt.legend(mu)
-    plt.title(c)
+    plt.title(constraint)
     im = ax.text(0.02, 0.98, 'frame %i' % idx, **txt_fr_kwargs)
     plt.savefig(os.path.join(tmp_dir, 'frame_%06i.jpeg' % idx))
 save_video(save_file, tmp_dir, framerate, frame_pattern='frame_%06i.jpeg')
