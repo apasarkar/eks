@@ -51,10 +51,11 @@ def squared_loss(q, D, keypoint_ensemble_list, constrained_keypoints_graph, mu):
     returns loss 
     
     '''
-    
+    nkeys = len(keypoint_ensemble_list)
     # sum (|qtj - q_tk|_2 - D_jk)^2
-    loss = [0 for p in range(len(keypoint_ensemble_list))]
+    
     for p, part in enumerate(keypoint_ensemble_list):
+        loss = [0 for p in range(len(keypoint_ensemble_list))]
         nei_idx = []
         neighbors = [item[0] for item in constrained_keypoints_graph if item[1] == part]+[item[1] for item in constrained_keypoints_graph if item[0] == part]
         # print(neighbors)
@@ -67,9 +68,11 @@ def squared_loss(q, D, keypoint_ensemble_list, constrained_keypoints_graph, mu):
         else:
             for idx in nei_idx:
                 # print('index',np.sum((np.linalg.norm(q[p,:,:]-q[idx,:,:],axis=1)-D[p,idx])**2),loss[p])
-                loss[p] += np.sum((np.linalg.norm(q[p,:]-q[idx,:],axis=0)-D[p,idx])**2)
+                loss[p] += np.sum((np.linalg.norm(q[p:p+nkeys]-q[idx:idx+nkeys],axis=0)-D[p,idx])**2)
                 
     return mu*np.sum(loss)
+
+#%%% epsilon loss
 
 def eps_insensitive_loss(q,D, keypoint_ensemble_list, constrained_keypoints_graph, mu):
     '''
@@ -92,10 +95,11 @@ def eps_insensitive_loss(q,D, keypoint_ensemble_list, constrained_keypoints_grap
     returns loss
     '''
     
-    
+    nkeys = len(keypoint_ensemble_list)
     eps = np.sqrt(np.var(D))
-    loss = [0 for p in range(len(keypoint_ensemble_list))]
+    
     for p, part in enumerate(keypoint_ensemble_list):
+        loss = [0 for p in range(len(keypoint_ensemble_list))]
         nei_idx = []
         neighbors = [item[0] for item in constrained_keypoints_graph if item[1] == part]+[item[1] for item in constrained_keypoints_graph if item[0] == part]
         # print(neighbors)
@@ -108,13 +112,13 @@ def eps_insensitive_loss(q,D, keypoint_ensemble_list, constrained_keypoints_grap
         else:
             for idx in nei_idx:
                 # print('index',np.sum((np.linalg.norm(q[p,:,:]-q[idx,:,:],axis=1)-D[p,idx])**2),loss[p])
-                loss[p] += np.sum(max(0.0, np.abs(np.linalg.norm(q[p,:]-q[idx,:],axis=0)-D[p,idx]) - eps))
+                loss[p] += np.sum(np.maximum(np.zeros(nkeys), np.abs(np.linalg.norm(q[p:p+nkeys]-q[idx:idx+nkeys],axis=0)-D[p,idx]) - eps))
                 
     return mu*np.sum(loss)
 
+#%%% Hand coded squared loss
 
-
-def gradient_distance(q, part, D, keypoint_ensemble_list, constrained_keypoints_graph):
+def gradient_distance(q, D, keypoint_ensemble_list, constrained_keypoints_graph):
     '''
         Squared loss gradient 
             sum_nodes connected to part (q[part,:]-q[connected_part,:])/np.linalg.norm(----) 
@@ -136,21 +140,22 @@ def gradient_distance(q, part, D, keypoint_ensemble_list, constrained_keypoints_
     gradient 
 
     '''
-    
-    p = keypoint_ensemble_list.index(part)
-    n,v = q.shape
-    neighbors = [item[0] for item in constrained_keypoints_graph if item[1] == part]+[item[1] for item in constrained_keypoints_graph if item[0] == part]
-    nei_idx = []
-    grad = np.zeros(v)
-    for elem in neighbors:
-        nei_idx.append(keypoint_ensemble_list.index(elem))  # get neighbor index
-    for idx in nei_idx:
-        if (np.linalg.norm(q[p, :] - q[idx, :])>0):
-            grad += (q[p, :] - q[idx, :])*(1 - D[p,idx]/(np.linalg.norm(q[p, :] - q[idx, :])))
+    nkeys = len(keypoint_ensemble_list)
+    n_latent = q.shape[0]//nkeys
+    grad = np.zeros(n_latent*nkeys)
+    for p,part in enumerate(keypoint_ensemble_list):
+        neighbors = [item[0] for item in constrained_keypoints_graph if item[1] == part]+[item[1] for item in constrained_keypoints_graph if item[0] == part]
+        nei_idx = []
+        for elem in neighbors:
+            nei_idx.append(keypoint_ensemble_list.index(elem))  # get neighbor index
+        for idx in nei_idx:
+            if (np.linalg.norm(q[p:p+n_latent] - q[idx:idx+n_latent])>0):
+               # print((q[p:p+n_latent] - q[idx:idx+n_latent]),(1 - D[p,idx]/(np.linalg.norm(q[p:p+n_latent] - q[idx:idx+n_latent]))),grad[p:p+n_latent].shape)
+                grad[p:p+n_latent] += (q[p:p+n_latent] - q[idx:idx+n_latent])*(1 - D[p,idx]/(np.linalg.norm(q[p:p+n_latent] - q[idx:idx+n_latent])))
     return 2*grad
     
     
-def hessian_distance(q, part,D, keypoint_ensemble_list, constrained_keypoints_graph):
+def hessian_distance(q, D, keypoint_ensemble_list, constrained_keypoints_graph):
     '''
         Hessian of squared loss
         
@@ -170,22 +175,23 @@ def hessian_distance(q, part,D, keypoint_ensemble_list, constrained_keypoints_gr
     -------
     hessian
     '''
-    p = keypoint_ensemble_list.index(part)
-    neighbors = [item[0] for item in constrained_keypoints_graph if item[1] == part]+[item[1] for item in constrained_keypoints_graph if item[0] == part]
-    nei_idx = []
     n = len(keypoint_ensemble_list)
-    hess = np.zeros((n,n))
-    for elem in neighbors:
-        nei_idx.append(keypoint_ensemble_list.index(elem))  # get neighbor index
-    
-    for idx in nei_idx:
-        if (np.linalg.norm(q[p, :] - q[idx, :])>0):
-            
-            hess += -(np.eye(n)-D[p,idx]* (np.eye(n)/(np.linalg.norm(q[p, :] - q[idx, :]))@ \
-                        (np.eye(n) - 1/(np.linalg.norm(q[p, :] - q[idx, :])**2)*(q[p,:]-q[idx,:])@(q[p,:]-q[idx,:]).T)))
+    n_latent = q.shape[0]//n
+    hess = np.zeros((n*n_latent,n*n_latent))
+    for p,part in enumerate(keypoint_ensemble_list):
+        nei_idx = []
+        neighbors = [item[0] for item in constrained_keypoints_graph if item[1] == part]+[item[1] for item in constrained_keypoints_graph if item[0] == part]
+        for elem in neighbors:
+            nei_idx.append(keypoint_ensemble_list.index(elem))  # get neighbor index
+        
+        for idx in nei_idx:
+            if (np.linalg.norm(q[p:p+n_latent]-q[idx:idx+n_latent])>0):
+                
+                hess[p:p+n_latent,p:p+n_latent] += -(np.eye(n_latent)-D[p,idx]* (np.eye(n_latent)/(np.linalg.norm(q[p:p+n_latent]-q[idx:idx+n_latent]))@ \
+                            (np.eye(n_latent) - 1/(np.linalg.norm(q[p:p+n_latent]-q[idx:idx+n_latent])**2)*(q[p:p+n_latent]-q[idx:idx+n_latent])@(q[p:p+n_latent]-q[idx:idx+n_latent]).T)))
     return 2*hess
 
-
+#%% Autograd losses 
 
 def autograd_loss(x,  D_ij, keypoint_ensemble_list, constrained_keypoints_graph, mu, loss='squared'):
     '''
@@ -215,7 +221,7 @@ def autograd_loss(x,  D_ij, keypoint_ensemble_list, constrained_keypoints_graph,
         gr = grad(lambda q: squared_loss(q, D_ij, keypoint_ensemble_list, constrained_keypoints_graph, mu))
     elif loss == 'eps':
         gr =  grad(lambda q: eps_insensitive_loss(q, D_ij, keypoint_ensemble_list, constrained_keypoints_graph, mu))
-    return(gr(x)+0.001)
+    return gr(x)
 
 def autohessian_loss(x, D_ij, keypoint_ensemble_list, constrained_keypoints_graph, mu, loss = 'squared'):
     '''
@@ -248,10 +254,20 @@ def autohessian_loss(x, D_ij, keypoint_ensemble_list, constrained_keypoints_grap
     return h(x)
     
 
+#%% Other functions (tracking...)
 
-
-
-
+def track_distances(q, keypoint_ensemble_list, constrained_keypoints_graph):
+    c = len(constrained_keypoints_graph)
+    n_latent = q.shape[0]//len(keypoint_ensemble_list)
+    # sum (|qtj - q_tk|_2 - D_jk)^2
+    track = np.zeros(c)
+    for i in range(c):
+        part = constrained_keypoints_graph[i][0]
+        neigh = constrained_keypoints_graph[i][1]
+        p = keypoint_ensemble_list.index(part)        
+        idx = keypoint_ensemble_list.index(neigh)      
+        track[i] = np.linalg.norm(q[p:p+n_latent]-q[idx:idx+n_latent])
+    return track
 
 # camera_names = ['main', 'top', 'right']
 # keypoint_ensemble_list = ['mid','fork','chin_base']

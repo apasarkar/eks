@@ -31,7 +31,7 @@ import tqdm.notebook as tqdm
 from scipy.optimize import *
 from scipy.interpolate import interp1d
 from eks.ensemble_kalman import ensemble, filtering_pass, kalman_dot, smooth_backward
-from eks.gradients import autograd_loss, autohessian_loss
+from eks.gradients import autograd_loss, autohessian_loss, gradient_distance, hessian_distance, track_distances
 
 
 
@@ -53,19 +53,28 @@ def objective(L, q):
     objective
 
     '''
-    s = 0
-    d = 0
     n = int(np.sqrt(len(L)))
     L = np.asarray(L).reshape((n,n))
     upper_indices = np.triu_indices(n,1) #offset to diagonal
     # (n-1)n/2 
-    L[upper_indices] = np.zeros((n*(n-1)//2)) # constraint upper triangle to zeros
+   # L[upper_indices] = np.zeros((n*(n-1)//2)) # constraint upper triangle to zeros
+    
+    assert np.linalg.det(L)==1
+    # for i in range(q.shape[0]):
+    #     d += np.var(L@q[i,:,:].T)
+    #     for j in range(q.shape[0]):
+    #         if j != i:
+    #             s+= np.var(np.linalg.norm(L@(q[i,:,:]-q[j,:,:]).T,axis=0))
+    # return s/d
+    s = np.zeros(q.shape[1])
     for i in range(q.shape[0]):
-        d += np.var(L@q[i,:,:].T)
         for j in range(q.shape[0]):
-            if j != i:
-                s+= np.var(np.linalg.norm(L@(q[i,:,:]-q[j,:,:]).T,axis=0))
-    return s/d
+            if j>i:
+               #  print(L.shape,(q[i,:]-q[j,:]).shape)
+                s += np.linalg.norm((q[i,:]-q[j,:])@L,axis=1)
+            else:
+                pass
+    return np.var(s)/np.var(np.linalg.norm(q@L, axis=2))
 
 # L = np.tri(3,3,0)
 # objective(L,q)
@@ -161,11 +170,11 @@ def get_3d_distance(q, L, keypoint_ensemble_list, constrained_keypoints_graph):
         DESCRIPTION.
 
     '''
-    n = len(keypoint_ensemble_list)
-    T = np.vstack(q).shape[0]//n
+
     n, T, v = q.shape
     D = np.zeros((T, n,n))
-    new_q = (L@np.vstack(q).T).reshape((n,T,v))
+    # print(L.shape, q.shape)
+    new_q = (q@L) # (L@np.vstack(q).T).reshape((n,T,v))
     
     # get constrained distances
     for t in range(T):
@@ -335,9 +344,9 @@ def multiview_pca_bodyparts(scaled_dict,good_preds_dict,good_frames_dict):
 # if full graph can use pairwise(keypoint_ensemble_list)
 
 
-# ASSUME WE STACK BODYPARTS ONE AFTER THE OTHER SO IF 3 BODYPARTS AND t = 51, q IS OF SHAPE (153,3)
+# assume y is shaped as y[0,:] [bodypart, camera, coord] 6 [bodypart, camera, coord] 6 ... ex shape (51,18)
 
-def filtering_pass_with_constraint(y, m0, S0, C, R, A, Q, ensemble_vars, D,L, keypoint_ensemble_list, constrained_keypoints_graph=None, mu=0.2, loss = 'squared'):
+def filtering_pass_with_constraint(y, m0, S0, C, R, A, Q, ensemble_vars, D,L, keypoint_ensemble_list,  constrained_keypoints_graph=None, mu=0, loss = 'squared'):
     '''
     
 
@@ -382,56 +391,58 @@ def filtering_pass_with_constraint(y, m0, S0, C, R, A, Q, ensemble_vars, D,L, ke
         filtering output for the ensemble variance.
 
     '''
+    
     if constrained_keypoints_graph == None:
         constrained_keypoints_graph = pairwise(keypoint_ensemble_list)
         # all nodes are connected from bodyparts of interest
     # y.shape = (keypoints, time steps, views) 
-    T = y.shape[1]  # number of time stpes
+    T = y.shape[0]  # number of time stpes
+    tract_dist = np.zeros((T, len(constrained_keypoints_graph)))
+    
     n = len(keypoint_ensemble_list) # number of keypoints
-    v = y.shape[2] # number of views
-    mf = np.zeros(shape=(n,T, m0.shape[0]) )
-    for i in range(n):
-        mf[i,:,:] = np.random.rand(T, m0.shape[0])
-    Vf = np.zeros(shape=(n,T, m0.shape[0], m0.shape[0]))
-    S = np.zeros(shape=(n,T, m0.shape[0], m0.shape[0]))
-    # for each keypoint
-    for k, part in enumerate(keypoint_ensemble_list):
-        # initial conditions
-        for i in range(v):
-            R[i,i] = ensemble_vars[k][0][i]
-        mf[k,0] =m0 + kalman_dot(y[k,0, :] - np.dot(C, m0), S0[k], C, R)
-        Vf[k,0, :] = S0[k] - kalman_dot(np.dot(C, S0[k]), S0[k], C, R)
-        S[k,0] = S0[k]
-        # filter over time
-    for i in range(1,T):
-        for k, part in enumerate(keypoint_ensemble_list):
-            # ensemble for each camera view
-            for t in range(v):
-                R[t,t] = ensemble_vars[k][i][t]
-            S[k,i-1] = np.dot(A, np.dot(Vf[k,i-1, :], A.T)) + Q
-            #print(S[i-1], )
-            y_minus_CAmf = y[k,i, :] - np.dot(C, np.dot(A, mf[k,i-1, :]))
-            # print("top", mf[:,i,:]@L)
+    n_latent=m0.shape[0]//n # number of latents
+    v = y.shape[1] # number of views
+    #time-varying observation variance
+    for i in range(ensemble_vars.shape[1]):
+        R[i,i] = ensemble_vars[0][i]
+    T = y.shape[0]
+    mf = np.zeros(shape=(T, m0.shape[0]))
+    Vf = np.zeros(shape=(T, m0.shape[0], m0.shape[0]))
+    S = np.zeros(shape=(T, m0.shape[0], m0.shape[0]))
+    mf[0] = m0 + kalman_dot(y[0, :] - np.dot(C, m0), S0, C, R)
+    Vf[0, :] = S0 - kalman_dot(np.dot(C, S0), S0, C, R)
+    S[0] = S0
+    
+    for i in range(1, T):
+        for t in range(ensemble_vars.shape[1]):
+            R[t,t] = ensemble_vars[i][t]
+        S[i-1] = np.dot(A, np.dot(Vf[i-1, :], A.T)) + Q
+        y_minus_CAmf = y[i, :] - np.dot(C, np.dot(A, mf[i-1, :])) 
+        
+        mf[i, :] = np.dot(A, mf[i-1, :]) + kalman_dot(y_minus_CAmf, S[i-1], C, R)
+        Vf[i, :] = S[i-1] - kalman_dot(np.dot(C, S[i-1]), S[i-1], C, R)
+        
+        if mu!= 0:
+            if loss == 'squared':
+                grad = gradient_distance(mf[i,:]@L, D, keypoint_ensemble_list, constrained_keypoints_graph)
+                # grad = autograd_loss(mf[i,:]@L,  D, keypoint_ensemble_list, constrained_keypoints_graph, mu, loss='squared')
+                hess = hessian_distance(mf[i,:]@L, D, keypoint_ensemble_list, constrained_keypoints_graph)
+                # hess = autohessian_loss(mf[i,:]@L, D, keypoint_ensemble_list, constrained_keypoints_graph, mu, loss='squared')
+            if loss == 'eps':
+                grad = autograd_loss(mf[i,:]@L,  D, keypoint_ensemble_list, constrained_keypoints_graph, mu, loss='eps')
+                hess = autohessian_loss(mf[i,:]@L,  D, keypoint_ensemble_list, constrained_keypoints_graph, mu, loss='eps')
             
-            if any(part in i for i in constrained_keypoints_graph):
-                if loss == 'squared':
-                    #grad = gradient_distance(mf[:,i,:]@L, part, D, keypoint_ensemble_list, constrained_keypoints_graph)
-                    grad = autograd_loss(mf[:,i,:]@L,  D, keypoint_ensemble_list, constrained_keypoints_graph, mu, loss='squared')
-                    #hess = hessian_distance(mf[:,i,:]@L, part, D, keypoint_ensemble_list, constrained_keypoints_graph)
-                    hess = autohessian_loss(mf[:,i,:]@L, D, keypoint_ensemble_list, constrained_keypoints_graph, mu, loss='squared')
-                if loss == 'eps':
-                    grad = autograd_loss(mf[:,i,:]@L,  D, keypoint_ensemble_list, constrained_keypoints_graph, mu, loss='eps')
-                    hess = autohessian_loss(mf[:,i,:]@L,  D, keypoint_ensemble_list, constrained_keypoints_graph, mu, loss='eps')
-                
-                # add gradient and hessian penalisaiton
-                mf[k,i, :] = np.dot(A, mf[k,i-1, :]) + kalman_dot(y_minus_CAmf, S[k,i-1], C, R) + mu*grad[k,:]
-                S[k,i-1] = np.linalg.inv(np.linalg.inv(S[k,i-1])+mu*hess[k,:,k,:])
-                
-            else:
-                mf[k,i, :] = np.dot(A, mf[k,i-1, :]) + kalman_dot(y_minus_CAmf, S[k,i-1], C, R) 
-            Vf[k,i, :] = S[k,i-1] - kalman_dot(np.dot(C, S[k,i-1]), S[k,i-1], C, R)
+            # add gradient and hessian penalisaiton
+            mf[i, :] = np.dot(A, mf[i-1, :]) + kalman_dot(y_minus_CAmf, S[i-1], C, R) + mu*grad
+            S[i-1] = np.linalg.inv(np.linalg.inv(S[i-1])+mu*hess[0])
             
-    return mf, Vf, S     
+        else:
+            mf[i, :] = np.dot(A, mf[i-1, :]) + kalman_dot(y_minus_CAmf, S[i-1], C, R) 
+            
+        Vf[i, :] = S[i-1] - kalman_dot(np.dot(C, S[i-1]), S[i-1], C, R)
+        tract_dist[i,:] = track_distances(mf[i,:]@L, keypoint_ensemble_list, constrained_keypoints_graph)
+            
+    return mf, Vf, S, tract_dist   
 
     
 
@@ -483,9 +494,8 @@ def filtering_pass_with_constraint(y, m0, S0, C, R, A, Q, ensemble_vars, D,L, ke
 #     return mf, Vf, S     
 
 
-
 #%%%%% TEST 
-tracker_name = 'heatmap_mhcrnn_tracker'
+# tracker_name = 'heatmap_mhcrnn_tracker'
 # folder = "/eks_opti"
 # operator = "/20210204_Quin/"
 # name = "img197707"
